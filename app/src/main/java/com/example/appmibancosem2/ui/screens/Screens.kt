@@ -341,32 +341,31 @@ fun PagosScreen(onBack: () -> Unit) {
 // ═══════════════════════════════════════════════════════════════
 // M5 - Préstamos: Simulador con cronograma e Historial (HU-05)
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// M5 - Préstamos: Simulador con cronograma e Historial (HU-05)
+// ═══════════════════════════════════════════════════════════════
 @Composable
 fun PrestamosScreen(onBack: () -> Unit) {
-    // --- 1. Variables de Persistencia ---
-    val context = LocalContext.current
+    // --- 1. Variables para Persistencia (Borrador e Historial) ---
+    val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = context.getSharedPreferences("mibanco_prefs", android.content.Context.MODE_PRIVATE)
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // --- 2. Cargar Borrador (si existe) o valores por defecto ---
+    // --- 2. Estado del simulador (recuperando borrador automáticamente) ---
     var monto by remember { mutableFloatStateOf(prefs.getFloat("borrador_monto", 5000f)) }
     var plazo by remember { mutableIntStateOf(prefs.getInt("borrador_plazo", 12)) }
     var tasa by remember { mutableDoubleStateOf(24.0) }
 
-    // Variables para el AlertDialog del historial
+    // Estado del modal de historial
     var mostrarHistorial by remember { mutableStateOf(false) }
     var contenidoHistorial by remember { mutableStateOf("") }
 
-    // --- 3. Guardar Borrador automáticamente al cambiar valores ---
+    // Guardado automático del borrador
     LaunchedEffect(monto, plazo) {
-        prefs.edit()
-            .putFloat("borrador_monto", monto)
-            .putInt("borrador_plazo", plazo)
-            .apply()
+        prefs.edit().putFloat("borrador_monto", monto).putInt("borrador_plazo", plazo).apply()
     }
 
-    // Cálculo instantáneo
     val simulador = SimuladorPrestamo(monto.toDouble(), tasa, plazo)
     val cuota = simulador.calcularCuota()
 
@@ -383,7 +382,10 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Resultado principal
+
+            // =========================================================
+            // INICIO DE TU CÓDIGO VISUAL ORIGINAL (Intacto)
+            // =========================================================
             Card(colors = CardDefaults.cardColors(containerColor = NavyPrimary)) {
                 Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Cuota Mensual Estimada", color = GoldLight)
@@ -391,7 +393,6 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 }
             }
 
-            // Slider para Monto
             Column {
                 Text("Monto solicitado: S/ ${monto.toInt()}", fontWeight = FontWeight.Bold)
                 Slider(
@@ -402,7 +403,6 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 )
             }
 
-            // Chips para Plazo
             Column {
                 Text("Plazo de pago (meses):", fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -417,23 +417,52 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 }
             }
 
-            // --- 4. BOTÓN: Solicitar Préstamo (Escribe en el archivo) ---
+            Text("Proyección del Cronograma (6m)", fontWeight = FontWeight.Bold, color = NavyDark)
+            Card(colors = CardDefaults.cardColors(containerColor = GrayLight.copy(alpha = 0.3f))) {
+                Column(Modifier.padding(12.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Mes", Modifier.weight(0.5f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("Capital", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("Interés", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("Saldo", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+
+                    var saldoRestante = monto.toDouble()
+                    val r = tasa / 100.0 / 12.0
+                    repeat(6) { i ->
+                        val interesMes = saldoRestante * r
+                        val capitalMes = cuota - interesMes
+                        saldoRestante -= capitalMes
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                            Text("${i+1}", Modifier.weight(0.5f), fontSize = 12.sp)
+                            Text("%.2f".format(capitalMes), Modifier.weight(1f), fontSize = 12.sp)
+                            Text("%.2f".format(interesMes), Modifier.weight(1f), fontSize = 12.sp)
+                            Text("%.0f".format(saldoRestante.coerceAtLeast(0.0)), Modifier.weight(1f), fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            // =========================================================
+            // FIN DE TU CÓDIGO VISUAL ORIGINAL
+            // =========================================================
+
+            // --- BOTONES AÑADIDOS DEBAJO DEL CRONOGRAMA ---
+            Spacer(modifier = Modifier.height(8.dp))
+
             Button(
                 onClick = {
-                    val archivo = File(context.filesDir, "historial_solicitudes.txt")
-                    val timestamp = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
+                    val archivo = java.io.File(context.filesDir, "historial_solicitudes.txt")
+                    val timestamp = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
 
-                    // A. Escribir registro (appendText no borra lo anterior)
-                    val detalle = "Préstamo: S/ ${monto.toInt()} - $plazo meses - ENVIADA"
-                    archivo.appendText("[$timestamp] $detalle\n")
+                    // Escribir en el archivo real
+                    archivo.appendText("[$timestamp] Préstamo: S/ ${monto.toInt()} - $plazo meses - ENVIADA\n")
 
-                    // B. Limpiar el borrador de SharedPreferences tras el éxito
+                    // Limpiar el borrador
                     prefs.edit().remove("borrador_monto").remove("borrador_plazo").apply()
 
-                    // C. Notificar al usuario y resetear valores
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Solicitud enviada correctamente")
-                    }
+                    // Mostrar notificación y resetear
+                    scope.launch { snackbarHostState.showSnackbar("Solicitud enviada correctamente") }
                     monto = 5000f
                     plazo = 12
                 },
@@ -444,10 +473,9 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 Text("Solicitar Préstamo", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
             }
 
-            // --- 5. BOTÓN: Ver Historial ---
             TextButton(
                 onClick = {
-                    val archivo = File(context.filesDir, "historial_solicitudes.txt")
+                    val archivo = java.io.File(context.filesDir, "historial_solicitudes.txt")
                     contenidoHistorial = if (archivo.exists()) archivo.readText() else "Sin solicitudes registradas."
                     mostrarHistorial = true
                 },
@@ -458,24 +486,37 @@ fun PrestamosScreen(onBack: () -> Unit) {
         }
     }
 
+    // Modal del historial
     // --- 6. MODAL (AlertDialog) para mostrar el historial ---
     if (mostrarHistorial) {
         AlertDialog(
             onDismissRequest = { mostrarHistorial = false },
             title = { Text("Historial Local", fontWeight = FontWeight.Bold) },
-            text = {
-                Text(
-                    text = contenidoHistorial,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
-                )
-            },
+            text = { Text(text = contenidoHistorial, fontSize = 14.sp, lineHeight = 20.sp) },
             confirmButton = {
                 TextButton(onClick = { mostrarHistorial = false }) { Text("Cerrar") }
+            },
+            // --- BOTÓN AÑADIDO: Limpiar historial desde el modal ---
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        val archivo = java.io.File(context.filesDir, "historial_solicitudes.txt")
+                        if (archivo.exists()) {
+                            archivo.delete() // Borra el archivo de texto
+                            scope.launch {
+                                snackbarHostState.showSnackbar("Historial de préstamos eliminado")
+                            }
+                        }
+                        mostrarHistorial = false // Cierra la ventana emergente
+                    }
+                ) {
+                    Text("Limpiar", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
             }
         )
     }
 }
+
 // ═══════════════════════════════════════════════════════════════
 // M6 - Ahorro: Metas y Proyección Compuesta (HU-06)
 // ═══════════════════════════════════════════════════════════════
