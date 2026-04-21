@@ -1,5 +1,6 @@
 package com.example.appmibancosem2.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,13 +17,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.appmibancosem2.data.model.DemoData
 import com.example.appmibancosem2.data.model.SimuladorPrestamo
 import com.example.appmibancosem2.ui.theme.*
+import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import com.example.appmibancosem2.data.model.Transaccion
 
 // ═══════════════════════════════════════════════════════════════
 // M3 - Transacciones: Historial con filtros dinámicos (HU-03)
@@ -31,23 +41,73 @@ import java.util.Calendar
  * Pantalla que muestra el historial de movimientos utilizando LazyColumn.
  * Implementa filtros reactivos por tipo de transacción (Débito/Crédito).
  */
+// ═══════════════════════════════════════════════════════════════
+// M3 - Transacciones: Historial Real conectado a Archivos (HU-03)
+// ═══════════════════════════════════════════════════════════════
 @Composable
 fun TransaccionesScreen(onBack: () -> Unit) {
     var filtro by remember { mutableStateOf("Todos") }
 
-    // Filtrado reactivo en base al estado del FilterChip
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val prefs = context.getSharedPreferences("mibanco_prefs", android.content.Context.MODE_PRIVATE)
+
+    // --- 1. Estado reactivo para nuestra "Base de Datos" de texto ---
+    var listaTransacciones by remember { mutableStateOf(listOf<Transaccion>()) }
+    val nombreArchivo = "historial_movimientos.txt"
+
+    // --- 2. Función para leer el archivo de texto y convertirlo a Objetos ---
+    fun cargarMovimientos() {
+        val archivo = java.io.File(context.filesDir, nombreArchivo)
+        val bdInicializada = prefs.getBoolean("bd_inicializada", false)
+
+        // MIGRACIÓN: Solo la primera vez, copiamos el DemoData al archivo real
+        if (!archivo.exists() && !bdInicializada) {
+            // Los guardamos invertidos para que al leerlos mantengan el orden correcto
+            DemoData.transacciones.reversed().forEach { tx ->
+                archivo.appendText("${tx.descripcion}|${tx.fecha}|${tx.monto}|${tx.categoria}\n")
+            }
+            prefs.edit().putBoolean("bd_inicializada", true).apply()
+        }
+
+        // LECTURA REAL: A partir de aquí, la pantalla SOLO confía en el archivo
+        if (archivo.exists()) {
+            val lineas = archivo.readLines()
+            listaTransacciones = lineas.mapNotNull { linea ->
+                val partes = linea.split("|")
+                if (partes.size >= 3) {
+                    Transaccion(
+                        descripcion = partes[0],
+                        fecha = partes[1],
+                        monto = partes[2].toDoubleOrNull() ?: 0.0,
+                        categoria = if (partes.size > 3) partes[3] else ""
+                    )
+                } else null
+            }.reversed() // Invertimos la lista final para que los pagos más nuevos salgan arriba
+        } else {
+            listaTransacciones = emptyList() // Si no hay archivo, la lista está vacía
+        }
+    }
+
+    // --- 3. Cargar datos apenas se abre la pantalla ---
+    LaunchedEffect(Unit) {
+        cargarMovimientos()
+    }
+
+    // El filtro ahora opera sobre la lista real (listaTransacciones), no sobre DemoData
     val transaccionesFiltradas = when (filtro) {
-        "Débito"  -> DemoData.transacciones.filter { it.esDebito() }
-        "Crédito" -> DemoData.transacciones.filter { !it.esDebito() }
-        else      -> DemoData.transacciones
+        "Débito"  -> listaTransacciones.filter { it.esDebito() }
+        "Crédito" -> listaTransacciones.filter { !it.esDebito() }
+        else      -> listaTransacciones
     }
 
     Scaffold(
         topBar = {
             MiBancoTopBar(titulo = "Mis Movimientos", mostrarBack = true, onBack = onBack)
-        }
+        },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { padding ->
-        // LazyColumn: Eficiencia para listas largas de movimientos
         LazyColumn(
             modifier       = Modifier.padding(padding).fillMaxSize(),
             contentPadding = PaddingValues(16.dp)
@@ -73,9 +133,47 @@ fun TransaccionesScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(16.dp))
             }
 
-            // Renderizado de ítems individuales
+            // --- 4. Mostramos los datos filtrados que provienen del archivo ---
             items(transaccionesFiltradas) { tx ->
                 FilaTransaccion(transaccion = tx)
+            }
+
+            // --- BOTÓN: Limpiar Movimientos ---
+            item {
+                Spacer(modifier = Modifier.height(32.dp))
+                Button(
+                    onClick = {
+                        val archivo = java.io.File(context.filesDir, nombreArchivo)
+
+                        if (archivo.exists()) {
+                            val fecha = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+                            android.util.Log.d("AppMiBanco", "[$fecha] EVENTO: Se limpió el historial general.")
+
+                            // 1. Borramos el archivo
+                            val borrado = archivo.delete()
+
+                            // 2. Refrescamos la UI instantáneamente y mostramos mensaje
+                            if (borrado) {
+                                cargarMovimientos() // Esto vaciará la lista visual
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("Historial eliminado con éxito")
+                                }
+                            }
+                        } else {
+                            scope.launch {
+                                snackbarHostState.showSnackbar("No hay movimientos para borrar")
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Limpiar todos los movimientos", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }
@@ -91,9 +189,15 @@ fun TransaccionesScreen(onBack: () -> Unit) {
  * - Card de resumen dinámico.
  * - AlertDialog para confirmación de seguridad.
  */
+// ═══════════════════════════════════════════════════════════════
+// M4 - Pagos: Formulario con validación y guardado real (HU-04)
+// ═══════════════════════════════════════════════════════════════
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PagosScreen(onBack: () -> Unit) {
+    // --- 1. Variable de contexto añadida para acceder a los archivos ---
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     var servicio by remember { mutableStateOf("") }
     var contrato by remember { mutableStateOf("") }
     var monto by remember { mutableStateOf("") }
@@ -124,7 +228,7 @@ fun PagosScreen(onBack: () -> Unit) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.CheckCircle, null, tint = GreenPositive)
                         Spacer(Modifier.width(8.dp))
-                        Text("¡Pago realizado con éxito!", color = GreenPositive, fontWeight = FontWeight.Bold)
+                        Text("¡Pago guardado y realizado con éxito!", color = GreenPositive, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -165,7 +269,7 @@ fun PagosScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth()
             )
 
-            // Resumen de la operación (HU-04)
+            // Resumen de la operación
             if (formularioValido) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -200,9 +304,22 @@ fun PagosScreen(onBack: () -> Unit) {
             text = { Text("Se debitará S/ $monto de su cuenta principal para el pago de $servicio.") },
             confirmButton = {
                 Button(onClick = {
+                    // --- 2. LÓGICA DE PERSISTENCIA REAL: Escribir en el archivo de texto ---
+                    val archivo = java.io.File(context.filesDir, "historial_movimientos.txt")
+                    val fecha = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
+
+                    // Creamos una línea con estructura: Titulo|Fecha|Monto|Tipo
+                    val registro = "Pago de $servicio|$fecha|-$monto|Debito\n"
+
+                    // Agregamos la línea al final del archivo sin borrar lo anterior
+                    archivo.appendText(registro)
+                    // ------------------------------------------------------------------------
+
                     mostrarConfirmacion = false
                     pagoExitoso = true
-                    contrato = ""; monto = ""; servicio = ""
+                    contrato = ""
+                    monto = ""
+                    servicio = ""
                 }) { Text("Confirmar") }
             },
             dismissButton = {
@@ -221,26 +338,52 @@ fun PagosScreen(onBack: () -> Unit) {
  * - Chips para selección de plazos y tasas.
  * - Cronograma detallado de las primeras 6 cuotas.
  */
+// ═══════════════════════════════════════════════════════════════
+// M5 - Préstamos: Simulador con cronograma e Historial (HU-05)
+// ═══════════════════════════════════════════════════════════════
 @Composable
 fun PrestamosScreen(onBack: () -> Unit) {
-    var monto by remember { mutableStateOf(5000f) }
-    var plazo by remember { mutableIntStateOf(12) }
+    // --- 1. Variables de Persistencia ---
+    val context = LocalContext.current
+    val prefs = context.getSharedPreferences("mibanco_prefs", android.content.Context.MODE_PRIVATE)
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // --- 2. Cargar Borrador (si existe) o valores por defecto ---
+    var monto by remember { mutableFloatStateOf(prefs.getFloat("borrador_monto", 5000f)) }
+    var plazo by remember { mutableIntStateOf(prefs.getInt("borrador_plazo", 12)) }
     var tasa by remember { mutableDoubleStateOf(24.0) }
 
-    // Cálculo instantáneo basado en estado
+    // Variables para el AlertDialog del historial
+    var mostrarHistorial by remember { mutableStateOf(false) }
+    var contenidoHistorial by remember { mutableStateOf("") }
+
+    // --- 3. Guardar Borrador automáticamente al cambiar valores ---
+    LaunchedEffect(monto, plazo) {
+        prefs.edit()
+            .putFloat("borrador_monto", monto)
+            .putInt("borrador_plazo", plazo)
+            .apply()
+    }
+
+    // Cálculo instantáneo
     val simulador = SimuladorPrestamo(monto.toDouble(), tasa, plazo)
     val cuota = simulador.calcularCuota()
 
     Scaffold(
         topBar = {
             MiBancoTopBar(titulo = "Simulador Financiero", mostrarBack = true, onBack = onBack)
-        }
+        },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { padding ->
         Column(
-            modifier = Modifier.padding(padding).padding(20.dp).verticalScroll(rememberScrollState()),
+            modifier = Modifier
+                .padding(padding)
+                .padding(20.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Resultado principal en tarjeta corporativa
+            // Resultado principal
             Card(colors = CardDefaults.cardColors(containerColor = NavyPrimary)) {
                 Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Cuota Mensual Estimada", color = GoldLight)
@@ -248,7 +391,7 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 }
             }
 
-            // Widget Slider (HU-05)
+            // Slider para Monto
             Column {
                 Text("Monto solicitado: S/ ${monto.toInt()}", fontWeight = FontWeight.Bold)
                 Slider(
@@ -259,7 +402,7 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 )
             }
 
-            // Widget Chips para Plazo
+            // Chips para Plazo
             Column {
                 Text("Plazo de pago (meses):", fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -274,37 +417,65 @@ fun PrestamosScreen(onBack: () -> Unit) {
                 }
             }
 
-            // Cronograma de Amortización (Primeros 6 meses)
-            Text("Proyección del Cronograma (6m)", fontWeight = FontWeight.Bold, color = NavyDark)
-            Card(colors = CardDefaults.cardColors(containerColor = GrayLight.copy(alpha = 0.3f))) {
-                Column(Modifier.padding(12.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Mes", Modifier.weight(0.5f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Text("Capital", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Text("Interés", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        Text("Saldo", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            // --- 4. BOTÓN: Solicitar Préstamo (Escribe en el archivo) ---
+            Button(
+                onClick = {
+                    val archivo = File(context.filesDir, "historial_solicitudes.txt")
+                    val timestamp = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
+
+                    // A. Escribir registro (appendText no borra lo anterior)
+                    val detalle = "Préstamo: S/ ${monto.toInt()} - $plazo meses - ENVIADA"
+                    archivo.appendText("[$timestamp] $detalle\n")
+
+                    // B. Limpiar el borrador de SharedPreferences tras el éxito
+                    prefs.edit().remove("borrador_monto").remove("borrador_plazo").apply()
+
+                    // C. Notificar al usuario y resetear valores
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Solicitud enviada correctamente")
                     }
-                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    
-                    var saldoRestante = monto.toDouble()
-                    val r = tasa / 100.0 / 12.0
-                    repeat(6) { i ->
-                        val interesMes = saldoRestante * r
-                        val capitalMes = cuota - interesMes
-                        saldoRestante -= capitalMes
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                            Text("${i+1}", Modifier.weight(0.5f), fontSize = 12.sp)
-                            Text("%.2f".format(capitalMes), Modifier.weight(1f), fontSize = 12.sp)
-                            Text("%.2f".format(interesMes), Modifier.weight(1f), fontSize = 12.sp)
-                            Text("%.0f".format(saldoRestante.coerceAtLeast(0.0)), Modifier.weight(1f), fontSize = 12.sp)
-                        }
-                    }
-                }
+                    monto = 5000f
+                    plazo = 12
+                },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPositive),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Solicitar Préstamo", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+            }
+
+            // --- 5. BOTÓN: Ver Historial ---
+            TextButton(
+                onClick = {
+                    val archivo = File(context.filesDir, "historial_solicitudes.txt")
+                    contenidoHistorial = if (archivo.exists()) archivo.readText() else "Sin solicitudes registradas."
+                    mostrarHistorial = true
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Text("Ver historial de solicitudes", color = NavyDark, fontWeight = FontWeight.SemiBold)
             }
         }
     }
-}
 
+    // --- 6. MODAL (AlertDialog) para mostrar el historial ---
+    if (mostrarHistorial) {
+        AlertDialog(
+            onDismissRequest = { mostrarHistorial = false },
+            title = { Text("Historial Local", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    text = contenidoHistorial,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { mostrarHistorial = false }) { Text("Cerrar") }
+            }
+        )
+    }
+}
 // ═══════════════════════════════════════════════════════════════
 // M6 - Ahorro: Metas y Proyección Compuesta (HU-06)
 // ═══════════════════════════════════════════════════════════════
@@ -357,10 +528,10 @@ fun AhorroScreen(onBack: () -> Unit) {
                         Text("Saldo Final", Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    
+
                     var saldoProy = ahorro.saldo
                     repeat(6) { i ->
-                        val interes = saldoProy * 0.005 
+                        val interes = saldoProy * 0.005
                         saldoProy += interes + aporteFijo
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                             Text("${i + 1}", Modifier.weight(0.5f), fontSize = 12.sp)
